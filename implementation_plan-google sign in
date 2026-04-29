@@ -1,0 +1,113 @@
+# Google Sign-In + Demo Credential Removal
+
+## Summary
+Add Google Sign-In to Login & Register pages with email-based account linking, remove demo credentials, and implement admin login via configurable email list.
+
+## Core Logic: "Same Email = Same Account"
+
+```mermaid
+flowchart TD
+    A[User clicks Sign in with Google] --> B[Google returns ID token with email + name]
+    B --> C{Email exists in DB?}
+    C -->|Yes, Patient| D[Login as that Patient]
+    C -->|Yes, Doctor| E[Login as that Doctor]
+    C -->|Yes, Admin| F[Login as Admin]
+    C -->|No| G{Email in ADMIN_EMAILS?}
+    G -->|Yes| H[Create Admin account → Login]
+    G -->|No| I[Create Patient account → Login]
+    D --> J[Return JWT token]
+    E --> J
+    F --> J
+    H --> J
+    I --> J
+```
+
+**Key behavior**: If `rahul@example.com` registered manually as a patient, then later does Google Sign-In with the same email → they get **the exact same patient profile** and JWT token. No duplicate accounts.
+
+## Proposed Changes
+
+---
+
+### Backend
+
+#### [MODIFY] [authController.js](file:///m:/Vibe%20Coding/MediAi/server/controllers/authController.js)
+- Add new `googleLogin` controller function
+- Receives `{ credential }` (Google ID token) from frontend
+- Verifies token via Google's `https://oauth2.googleapis.com/tokeninfo` endpoint (no npm package needed)
+- Extracts `email`, `name`, `picture` from verified token
+- Searches Patient → Doctor → Admin collections for matching email
+- If found → login to existing account (same profile!)
+- If not found → check if email is in `ADMIN_EMAILS` → create Admin or Patient accordingly
+- Doctors are never auto-created via Google (they need specialization etc.) — only existing doctor accounts can login via Google
+- Returns JWT token + user data (identical format to manual login)
+
+#### [MODIFY] [authRoutes.js](file:///m:/Vibe%20Coding/MediAi/server/routes/authRoutes.js)
+- Add `POST /api/auth/google` route → `googleLogin`
+
+#### [MODIFY] [Patient.js](file:///m:/Vibe%20Coding/MediAi/server/models/Patient.js)
+- Make `password` field **not required** (Google users won't have a password)
+- Add `googleId` field (optional, stores Google sub ID)
+- Add `avatar` default from Google profile picture
+
+#### [MODIFY] [User.js](file:///m:/Vibe%20Coding/MediAi/server/models/User.js) (Admin model)
+- Make `password` field **not required** (admin can login via Google only)
+- Add `googleId` field (optional)
+
+#### [MODIFY] [server/.env](file:///m:/Vibe%20Coding/MediAi/server/.env)
+- Add `ADMIN_EMAILS=maazk8448@gmail.com` (comma-separated for future expansion)
+- Add `GOOGLE_CLIENT_ID=<your-google-client-id>`
+
+---
+
+### Frontend
+
+#### [MODIFY] [Login.tsx](file:///m:/Vibe%20Coding/MediAi/src/pages/Login.tsx)
+- **Remove** entire demo credentials section (lines 137–169)
+- **Add** "Sign in with Google" button with Google branding
+- On click → trigger Google Identity Services popup
+- On success → send credential token to `POST /api/auth/google`
+- On response → store token/user in AuthContext and redirect to dashboard
+
+#### [MODIFY] [Register.tsx](file:///m:/Vibe%20Coding/MediAi/src/pages/Register.tsx)
+- **Add** "Sign up with Google" button (only for patient role)
+- Same backend endpoint (`/api/auth/google`) — auto-creates patient if email not found
+
+#### [MODIFY] [api.ts](file:///m:/Vibe%20Coding/MediAi/src/lib/api.ts)
+- Add `googleLogin: (credential: string) => api.post('/auth/google', { credential })`
+
+#### [MODIFY] [AuthContext.tsx](file:///m:/Vibe%20Coding/MediAi/src/context/AuthContext.tsx)
+- Add `googleLogin` method that calls the API and stores the session
+
+#### [MODIFY] [.env](file:///m:/Vibe%20Coding/MediAi/.env) (frontend root)
+- Add `VITE_GOOGLE_CLIENT_ID=<your-google-client-id>`
+
+#### [MODIFY] [index.html](file:///m:/Vibe%20Coding/MediAi/index.html)
+- Add Google Identity Services script tag: `<script src="https://accounts.google.com/gsi/client" async defer></script>`
+
+---
+
+## Admin Login Flow
+
+| Method | How it works |
+|--------|-------------|
+| **Google Sign-In** | If email matches `ADMIN_EMAILS` → login/create as admin |
+| **Manual (email+password)** | Standard login against Admin collection with bcrypt password |
+
+`ADMIN_EMAILS` is a comma-separated env var: `maazk8448@gmail.com,another@admin.com`
+
+> [!IMPORTANT]
+> You need a **Google OAuth Client ID** for this to work. 
+> Go to [Google Cloud Console → Credentials](https://console.cloud.google.com/apis/credentials), create an **OAuth 2.0 Client ID** (Web application type), and add `http://localhost:5173` to "Authorized JavaScript origins".
+> I'll add placeholders in `.env` — you just paste your Client ID.
+
+## Verification Plan
+
+### Automated Tests
+- Backend: verify Google token validation endpoint works
+- Test same-email linking: manual register → Google login with same email → same user ID
+
+### Manual Verification
+- Login page: no demo credentials visible
+- Google button works → popup → redirect to correct dashboard
+- Patient registers manually → later logs in with Google (same email) → same profile
+- Admin `maazk8448@gmail.com` → Google Sign-In → admin dashboard
